@@ -2,17 +2,19 @@ use std::io;
 use std::mem::size_of;
 use std::net::{self, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::time::Duration;
+use std::ptr;
 use std::os::windows::io::FromRawSocket;
 use std::os::windows::raw::SOCKET as StdSocket; // winapi uses usize, stdlib uses u32/u64.
 
 use winapi::ctypes::{c_char, c_int, c_ushort};
 use winapi::shared::ws2def::{SOCKADDR_STORAGE, AF_INET, SOCKADDR_IN};
 use winapi::shared::ws2ipdef::SOCKADDR_IN6_LH;
+use winapi::shared::mstcpip;
 
-use winapi::shared::minwindef::{BOOL, TRUE, FALSE};
+use winapi::shared::minwindef::{BOOL, TRUE, FALSE, DWORD, LPVOID, LPDWORD,};
 use winapi::um::winsock2::{
     self, closesocket, linger, setsockopt, getsockopt, getsockname, PF_INET, PF_INET6, SOCKET, SOCKET_ERROR,
-    SOCK_STREAM, SOL_SOCKET, SO_LINGER, SO_REUSEADDR,
+    SOCK_STREAM, SOL_SOCKET, SO_LINGER, SO_REUSEADDR, WSAIoctl, LPWSAOVERLAPPED
 };
 
 use crate::sys::windows::net::{init, new_socket, socket_addr};
@@ -146,6 +148,64 @@ pub(crate) fn set_linger(socket: TcpSocket, dur: Option<Duration>) -> io::Result
     ) } {
         SOCKET_ERROR => Err(io::Error::last_os_error()),
         _ => Ok(()),
+    }
+}
+
+pub(crate) fn set_keepalive(socket: TcpSocket, dur: Option<Duration>) -> io::Result<()> {
+    // Windows takes the keepalive timeout as a u32 of milliseconds.
+    let dur_ms = dur.map(|dur| {
+        let ms = dur.as_millis();
+        if ms > DWORD::max_value() as u128 {
+            winapi::um::winbase::INFINITE
+        } else {
+            ms as DWORD
+        }
+    }).unwrap_or(0);
+
+    let keepalive = mstcpip::tcp_keepalive {
+        onoff: dur.is_some() as c_ulong,
+        keepalivetime: dur_ms as c_ulong,
+        keepaliveinterval: dur_ms as c_ulong,
+    };
+
+    let mut out = 0;
+    match unsafe { WSAIoctl(
+        socket,
+        mstcpip::SIO_KEEPALIVE_VALS,
+        &keepalive as *const _ as *mut _ as LPVOID,
+        size_of::<mstcpip::tcp_keepalive> as DWORD,
+        ptr::null_mut() as LPVOID,
+        0 as DWORD,
+        &mut out as *mut _ as LPDVOID,
+        ptr::null_mut() as LPWSAOVERLAPPED,
+        None,
+    ) } {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error())
+    }
+}
+
+pub(crate) fn get_keepalive(socket: TcpSocket) -> io::Result<Option<Duration>> {
+    let mut keepalive = mstcpip::tcp_keepalive {
+        onoff: 0,
+        keepalivetime: 0,
+        keepaliveinterval: 0,
+    };
+
+    match unsafe { WSAIoctl(
+        socket,
+        mstcpip::SIO_KEEPALIVE_VALS,
+        ptr::null_mut() as LPVOID,
+        0,
+        &mut keepalive as *mut _ as LPVOID,
+        size_of::<mstcpip::tcp_keepalive>() as DWORD,
+        ptr::null_mut() as LPDVOID,
+        ptr::null_mut() as LPWSAOVERLAPPED,
+        None,
+    ) } {
+        0 if keepalive.onoff == 0 || keepalive.keepaliveinterval == 0 => Ok(None),
+        0 => Ok(Some(Duration::from_millis(ka.keepaliveinterval as u64))),
+        _ => Err(io::Error::last_os_error())
     }
 }
 

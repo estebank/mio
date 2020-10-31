@@ -50,6 +50,15 @@ pub(crate) fn set_linger(_: TcpSocket, _: Option<Duration>) -> io::Result<()> {
     os_required!();
 }
 
+pub(crate) fn set_keepalive(_: TcpSocket, _: Option<Duration>) -> io::Result<()> {
+    os_required!();
+}
+
+pub(crate) fn get_keepalive(_: TcpSocket) -> io::Result<Option<Duration>> {
+    os_required!();
+}
+
+
 pub fn accept(_: &net::TcpListener) -> io::Result<(net::TcpStream, SocketAddr)> {
     os_required!();
 }
